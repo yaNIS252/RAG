@@ -1,0 +1,171 @@
+# RAG Support
+
+Pipeline de Génération Augmentée par Récupération (RAG) prêt pour la production, conçu pour le support client. Construit avec LlamaIndex, Mistral AI, Qdrant et FastAPI.
+
+---
+
+## 💡 Comprendre le RAG (Génération Augmentée par Récupération)
+
+Un modèle de langage (LLM) classique ne connaît pas vos données privées et peut inventer des réponses (hallucinations). Le RAG résout ce problème en trois étapes :
+
+1. RECHERCHE : Quand une question est posée, le système cherche les documents pertinents dans votre base de données (Qdrant).
+2. ENRICHISSEMENT : Le système regroupe la question et les documents trouvés.
+3. GÉNÉRATION : Le modèle (Mistral) rédige une réponse fiable en se basant uniquement sur ces documents, en citant ses sources.
+
+---
+
+## 🏗️ Architecture du Projet
+
+### Organisation des dossiers
+
+* src/config.py : Configuration globale et variables d'environnement.
+* src/ingestion/ : Pipeline pour importer vos données (crawler web, découpage en blocs, vectorisation et stockage).
+* src/query/ : Pipeline pour répondre aux questions (recherche vectorielle, réordonnancement, génération de la réponse et calcul du score de confiance).
+* src/api/ : Code de l'API web (FastAPI) pour exposer les services.
+* scripts/ : Scripts pour lancer l'ingestion ou poser des questions depuis le terminal.
+* tests/ : Tests de l'application.
+
+---
+
+## 🛠️ Installation et Configuration
+
+### 1. Création de l'environnement virtuel
+
+Exécutez cette commande dans votre terminal :
+
+```bash
+python -m venv .venv
+```
+
+### 2. Activation de l'environnement virtuel
+
+Sur Windows :
+```bash
+.venv\Scripts\activate
+```
+
+Sur Linux ou macOS :
+```bash
+source .venv/bin/activate
+```
+
+### 3. Installation des dépendances
+
+Installez les bibliothèques requises :
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configuration des variables d'environnement
+
+Copiez le fichier d'exemple pour créer votre fichier de configuration :
+```bash
+cp .env.example .env
+```
+Ouvrez ensuite le fichier `.env` nouvellement créé et renseignez vos clés d'API (MISTRAL_API_KEY, QDRANT_URL, QDRANT_API_KEY, FIRECRAWL_API_KEY, et MASTER_API_KEY).
+
+---
+
+## 🚀 Utilisation en ligne de commande (CLI)
+
+### Ingestion (Indexation d'un site web)
+
+Pour lire un site web et enregistrer ses pages dans votre base de données :
+```bash
+python -m scripts.ingest --client demo --url https://docs.example.com --max-pages 50 --verify
+```
+
+### Requête (Poser une question)
+
+Pour tester le système en direct depuis votre terminal :
+```bash
+python -m scripts.query --client demo --question "Comment puis-je m'authentifier ?" --debug
+```
+
+---
+
+## 🌐 Utilisation de l'API (FastAPI)
+
+### Démarrer le serveur
+
+Lancez l'API localement avec cette commande :
+```bash
+uvicorn src.api.main:app --reload --port 8000
+```
+
+Toutes les requêtes (sauf la route de santé /v1/health) nécessitent l'en-tête suivant :
+`X-API-Key: <VOTRE_MASTER_API_KEY>`
+
+### Exemple de requête de recherche (via cURL)
+
+```bash
+curl -X POST http://localhost:8000/v1/query \
+  -H "X-API-Key: VotreCleSecrete" \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "demo", "question": "Quelle est la politique de remboursement ?"}'
+```
+
+### Exemple de réponse de l'API (Format JSON)
+
+```json
+{
+  "answer_text": "Notre politique permet un remboursement sous 14 jours...",
+  "confidence_score": 0.82,
+  "action": "auto_reply",
+  "sources": ["https://docs.example.com/refunds"],
+  "latency_ms": {
+    "retrieve_ms": 50,
+    "rerank_ms": 100,
+    "generate_ms": 2100,
+    "total_ms": 2260
+  }
+}
+```
+
+### Décision d'aiguillage automatique (Champ 'action')
+
+* auto_reply (Score >= 0.75) : Confiance élevée. La réponse peut être envoyée directement au client.
+* suggest_to_agent (Score entre 0.50 et 0.74) : Confiance moyenne. Présenter la réponse à un conseiller pour validation.
+* escalate (Score < 0.50) : Confiance faible. Transférer la question directement à un conseiller humain.
+
+---
+
+## 🔒 Sécurité et Production
+
+L'utilisation d'une unique clé MASTER_API_KEY est insuffisante pour de la production multi-clients. Avant de déployer à grande échelle :
+
+1. Remplacez la clé fixe par une vérification en base de données pour associer chaque clé API à un client réel.
+2. Mettez en place des quotas et des limites de requêtes par client.
+3. Utilisez une base Redis pour partager les états de limitation si vous utilisez plusieurs instances de l'application.
+
+---
+
+## 🚀 Déploiement sur Railway
+
+1. Connectez-vous via le terminal :
+```bash
+railway login
+```
+
+2. Associez votre dossier local à votre projet Railway :
+```bash
+railway link
+```
+
+3. Déployez l'application :
+```bash
+railway up
+```
+
+### Configuration requise sur Railway
+
+Dans l'onglet "Variables" de votre projet Railway, ajoutez les variables d'environnement suivantes :
+* MISTRAL_API_KEY
+* QDRANT_URL
+* QDRANT_API_KEY
+* FIRECRAWL_API_KEY
+* MASTER_API_KEY
+
+Note concernant la mémoire : Le service a besoin d'au moins 2 Go de RAM dans vos paramètres Railway pour charger les modèles d'embedding en mémoire sans planter.
+```
+---
