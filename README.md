@@ -1,100 +1,147 @@
 RAG Support
-Pipeline de génération augmentée par récupération (RAG) conçu pour le support client. Construit avec LlamaIndex, Mistral AI, Qdrant et FastAPI.
-🛠️ Architecture du Projet
-Structure des dossiers
+Pipeline de Génération Augmentée par Récupération (RAG) prêt pour la production, conçu pour automatiser et assister le support client de niveau 1.
+Ce projet est construit sur une architecture moderne utilisant LlamaIndex, Mistral AI, Qdrant et FastAPI.
+💡 Comprendre le RAG (Retrieval-Augmented Generation)
+Quel est le problème avec les LLM classiques ?
+Un grand modèle de langage (LLM) comme Mistral ou GPT est entraîné sur un volume gigantesque de données publiques à un instant T. Il présente deux limites majeures pour un cas d'usage professionnel :
+L'absence de connaissances privées : Le LLM ne connaît pas vos procédures internes, votre politique de remboursement ou les détails de votre API.
+L'hallucination : Face à une question dont il ignore la réponse, un LLM a tendance à inventer une réponse plausible mais factuellement incorrecte.
+La Solution : Le RAG
+Le RAG résout ces problèmes en agissant comme un moteur de recherche intelligent couplé à un rédacteur professionnel. Au lieu de demander au LLM de chercher la réponse dans sa "mémoire" (ses poids), le pipeline procède en trois étapes :
+code
+Text
+1. RECHERCHE (Retrieve)          2. ENRICHISSEMENT (Augment)      3. GÉNÉRATION (Generate)
+ ┌──────────────────────┐         ┌─────────────────────────┐      ┌──────────────────────┐
+ │ Question de l'usager │ ──────► │ Question + Documents    │ ───► │ Réponse fiable       │
+ │ + Base vectorielle   │         │ pertinents (Contexte)   │      │ rédigée avec sources │
+ └──────────────────────┘         └─────────────────────────┘      └──────────────────────┘
+La Récupération (Retrieve) : Dès qu'une question est posée (ex: "Comment être remboursé ?"), le système interroge une base de données vectorielle (Qdrant) pour y trouver les passages de votre documentation les plus pertinents.
+L'Augmentation (Augment) : On construit un "prompt" (une consigne) enrichi de la question initiale et des extraits de documents trouvés.
+La Génération (Generate) : Le LLM (Mistral) lit ces extraits et rédige une réponse claire et factuelle. Il a pour consigne stricte de refuser de répondre s'il ne trouve pas l'information dans le contexte fourni, éliminant ainsi presque totalement les hallucinations.
+🏗️ Architecture du Projet
+Le système sépare strictement la phase de préparation des données (Ingestion) et la phase d'interaction (Requête/RAG).
+code
+Text
+┌────────────────────────────────────────┐
+               │          API REST (FastAPI)            │
+               └───────────────────┬────────────────────┘
+                                   │
+         ┌─────────────────────────┴─────────────────────────┐
+         ▼                                                   ▼
+┌─────────────────────────────────┐                 ┌─────────────────────────────────┐
+│     1. Pipeline d'Ingestion     │                 │      2. Pipeline de Requête     │
+│   (Préparation des données)     │                 │      (Moteur de Recherche RAG)  │
+└─────────────────────────────────┘                 └─────────────────────────────────┘
+1. Le Pipeline d'Ingestion (Asynchrone)
+Ce pipeline transforme des pages web brutes en "connaissances" assimilables par la base de données vectorielle.
+code
+Text
+[ URL ] ➔ ( Firecrawl ) ➔ [ Markdown Propre ] ➔ ( Chunker ) ➔ [ Fragments ]
+                                                                    │
+ [ Qdrant ] ◄── ( Import Idempotent ) ◄── [ Vecteurs (768d) ] ◄── ( Multi-E5 )
+Extraction (Firecrawl) : Télécharge les pages d'un site web et élimine le bruit (menus, footers) pour ne garder qu'un format Markdown propre.
+Découpage (Chunking) : Découpe le texte en blocs (chunks) de taille homogène pour que le modèle puisse les analyser précisément.
+Idempotence (UUID5) : Assigne un identifiant unique à chaque fragment basé sur son contenu textuel. Cela évite les doublons dans la base si le script est lancé plusieurs fois.
+Vectorisation (Embedding - E5) : Transforme chaque bloc de texte en une suite de 768 nombres représentant son sens sémantique (vecteur).
+Base Vectorielle (Qdrant) : Stocke ces vecteurs et les textes associés pour permettre des recherches ultra-rapides.
+2. Le Pipeline de Requête (RAG Synchrone)
+Ce pipeline s'exécute en quelques secondes lorsqu'un utilisateur pose une question.
+code
+Text
+[ Question ] ➔ ( Qdrant Retriever ) ➔ [ Top-K Fragments ] ➔ ( MiniLM Reranker ) ➔ [ Contexte Filtré ]
+                                                                                          │
+ [ Routage ] ◄── ( Confidence Scorer ) ◄── [ Réponse + Sources ] ◄── ( Mistral LLM ) ◄────┘
+Récupération (Retrieval) : Convertit la question en vecteur et récupère les blocs de texte sémantiquement proches dans Qdrant.
+Réordonnancement (Reranking - MiniLM) : Évalue de manière plus fine la pertinence de chaque fragment par rapport à la question. Les fragments jugés hors-sujet sont rejetés pour ne conserver que le contexte indispensable.
+Synthèse (Generation - Mistral) : Mistral formule une réponse rédigée en s'appuyant uniquement sur les documents retenus et liste les sources utilisées.
+Calcul de Confiance (Scoring) : Un algorithme évalue la qualité de la réponse (présence de citations, cohérence, détection de phrases d'évitement comme "Je ne sais pas"). Un score entre 0 et 1 est attribué.
+Aiguillage (Routing) : Détermine si la réponse est assez fiable pour être envoyée directement au client ou si elle doit être relue par un humain.
+📁 Structure des Fichiers
 code
 Text
 .
 ├── src/
-│   ├── config.py          # Configuration globale (Pydantic Settings - source unique de vérité)
-│   ├── ingestion/         # Ingestion : Firecrawl → Découpage → Vectorisation → Import Qdrant
-│   │   ├── crawler.py
-│   │   ├── chunker.py
-│   │   ├── embedder.py
-│   │   ├── vector_store.py
-│   │   └── pipeline.py
-│   ├── query/             # Requête : Récupération → Reranking → Génération → Scoring → Routage
-│   │   ├── retriever.py
-│   │   ├── reranker.py
-│   │   ├── generator.py
-│   │   ├── scorer.py
-│   │   ├── router.py
-│   │   └── pipeline.py
-│   └── api/               # API FastAPI
-│       ├── main.py
-│       ├── schemas.py
-│       ├── dependencies.py
-│       ├── middleware.py
-│       └── routes/
-├── scripts/               # Scripts d'entrée en ligne de commande (CLI)
-│   ├── ingest.py
-│   └── query.py
-└── tests/                 # Tests unitaires et d'intégration
-Choix techniques
-Vectorisation (Embeddings) : intfloat/multilingual-e5-base (768 dimensions) pour le support multilingue (français/anglais). Le modèle est chargé une seule fois au démarrage et partagé entre les pipelines d'ingestion et de requête.
-Reranking : cross-encoder/ms-marco-MiniLM-L-12-v2 (~130 Mo, ~100 ms d'exécution sur CPU).
-Modèle de génération (LLM) : Mistral small-latest, offrant un bon équilibre entre coût et performance pour le support de niveau 1.
-Extraction web : Firecrawl pour extraire les pages web dans un format Markdown propre.
-Idempotence : Utilisation d'identifiants de fragments (chunks) déterministes basés sur UUID5 pour éviter les doublons lors des écritures dans Qdrant.
-Calcul de confiance : Score combinant la pertinence (via une fonction sigmoïde), la cohérence de la réponse, la couverture des citations et la longueur du texte. Un malus de 35 % est appliqué si le modèle génère une réponse indiquant que l'information n'est pas disponible.
-Limitation de débit (Rate Limiting) : Implémenté en mémoire (fenêtre glissante de 10 requêtes/seconde par clé API). Peut être remplacé par Redis pour un déploiement multi-instance.
-⚙️ Installation et Configuration
-1. Cloner et configurer l'environnement virtuel
+│   ├── config.py          # Configuration globale (Pydantic - variables d'environnement)
+│   ├── ingestion/         # Pipeline d'importation des connaissances
+│   │   ├── crawler.py     # Récupération web via Firecrawl
+│   │   ├── chunker.py     # Découpage du texte en blocs
+│   │   ├── embedder.py    # Modèle de vectorisation (E5)
+│   │   ├── vector_store.py# Connexion et opérations Qdrant
+│   │   └── pipeline.py    # Orchestration de l'ingestion
+│   ├── query/             # Pipeline d'exécution RAG
+│   │   ├── retriever.py   # Recherche dans Qdrant
+│   │   ├── reranker.py    # Réordonnancement via MiniLM
+│   │   ├── generator.py   # Appel et instructions LLM Mistral
+│   │   ├── scorer.py      # Calcul du score de confiance
+│   │   ├── router.py      # Logique de routage de la réponse
+│   │   └── pipeline.py    # Orchestration de la requête
+│   └── api/               # Couche d'exposition HTTP (FastAPI)
+│       ├── main.py        # Point d'entrée de l'API
+│       ├── schemas.py     # Modèles de données (validation Pydantic)
+│       ├── dependencies.py# Injection de dépendances et sécurité
+│       ├── middleware.py  # Limiteur de débit, logs, CORS
+│       └── routes/        # Déclaration des endpoints
+├── scripts/               # Points d'accès CLI (Terminal)
+│   ├── ingest.py          # Script d'ingestion manuel
+│   └── query.py           # Script de test de requête manuel
+└── tests/                 # Tests automatisés
+🛠️ Installation et Configuration
+Prerequis
+Python 3.10 ou supérieur
+1. Cloner et configurer l'environnement
 code
 Bash
-# Création de l'environnement virtuel
+# Créer l'environnement virtuel
 python -m venv .venv
 
-# Activation de l'environnement virtuel
+# Activer l'environnement virtuel
 # Sur Windows :
 .venv\Scripts\activate
 # Sur Linux/macOS :
 source .venv/bin/activate
 
-# Installation des dépendances
+# Installer les dépendances
 pip install -r requirements.txt
-2. Variables d'environnement
-Copiez le fichier d'exemple et renseignez vos clés API :
+2. Configuration des variables d'environnement
+Créez un fichier .env à la racine à partir du modèle d'exemple :
 code
 Bash
 cp .env.example .env
-💻 Utilisation en Ligne de Commande (CLI)
-Ingestion de données
-Pour indexer un site de documentation :
+Renseignez vos clés API dans le fichier .env :
+MISTRAL_API_KEY : Clé d'accès à l'API Mistral AI.
+QDRANT_URL & QDRANT_API_KEY : Vos accès à l'instance de base de données vectorielle.
+FIRECRAWL_API_KEY : Pour le scraping des sites web de documentation.
+MASTER_API_KEY : Clé secrète d'accès à votre API FastAPI (à générer).
+🚀 Utilisation
+En Ligne de Commande (CLI)
+Étape 1 : Indexer une documentation
+Téléchargez et découpez un site web pour l'injecter dans la base vectorielle.
 code
 Bash
 python -m scripts.ingest --client demo --url https://docs.example.com --max-pages 50 --verify
-Requête directe
-Pour interroger l'index via le terminal :
+Étape 2 : Interroger la base en direct
+Testez le pipeline de recherche et de génération directement depuis votre terminal.
 code
 Bash
 python -m scripts.query --client demo --question "Comment puis-je m'authentifier ?" --debug
-🌐 API
-Démarrage du serveur
+Via l'API HTTP (Production)
+Démarrez le serveur FastAPI localement :
 code
 Bash
 uvicorn src.api.main:app --reload --port 8000
-🔒 Sécurité : Tous les points de terminaison (excepté /v1/health) requièrent l'en-tête X-API-Key: <VOTRE_MASTER_API_KEY>.
-Liste des routes principales
-Méthode	Route	Description
-POST	/v1/ingest	Lance une tâche d'ingestion asynchrone (retourne un task_id)
-GET	/v1/ingest/{task_id}	Récupère l'état d'avancement d'une tâche d'ingestion
-POST	/v1/query	Soumet une question (retourne la réponse, le score et l'action recommandée)
-GET	/v1/health	Vérifie l'état de santé du service, de Qdrant et de Mistral (sans authentification)
-GET	/v1/clients/{client_id}/stats	Statistiques du client (nombre de fragments, volume de requêtes)
-GET	/metrics	Métriques au format Prometheus
-Exemple de requête de recherche
+Toutes les requêtes (sauf /v1/health) nécessitent l'en-tête X-API-Key: <VOTRE_MASTER_API_KEY>.
+Exemple de requête RAG (Interrogation)
 code
 Bash
 curl -X POST http://localhost:8000/v1/query \
-  -H "X-API-Key: $MASTER_API_KEY" \
+  -H "X-API-Key: VotreCleSecrete" \
   -H "Content-Type: application/json" \
   -d '{"client_id": "demo", "question": "Quelle est la politique de remboursement ?"}'
-Exemple de réponse :
+Exemple de réponse retournée :
 code
 JSON
 {
-  "answer_text": "...",
+  "answer_text": "Notre politique permet un remboursement intégral sous 14 jours...",
   "confidence_score": 0.82,
   "action": "auto_reply",
   "sources": ["https://docs.example.com/refunds"],
@@ -106,19 +153,15 @@ JSON
   },
   "cost_estimate_eur": 0.000345,
   "score_breakdown": {
-    "C1": 0.34,
-    "C2": 0.28,
-    "C3": 0.14,
-    "C4": 0.06,
-    "P": 1.0,
-    "final": 0.82
+    "C1": 0.34, "C2": 0.28, "C3": 0.14, "C4": 0.06, "P": 1.0, "final": 0.82
   }
 }
-Logique de routage des actions (action)
+Comprendre les actions de routage automatique (action)
+L'API calcule une décision d'aiguillage selon le score de confiance obtenu :
 auto_reply (Score 
 ≥
 ≥
- 0.75) : Niveau de confiance élevé. La réponse peut être envoyée directement à l'utilisateur.
+ 0.75) : Réponse très fiable. Peut être envoyée directement au client final sans intervention humaine.
 suggest_to_agent (
 0.50
 ≤
@@ -127,68 +170,32 @@ suggest_to_agent (
 <
 0.75
 <0.75
-) : Niveau de confiance modéré. Présenter la réponse à un agent humain pour validation avant envoi.
+) : Réponse incertaine. Présentée à un agent humain pour relecture ou ajustement avant envoi.
 escalate (Score 
 <
 0.50
 <0.50
-) : Niveau de confiance insuffisant. Transfert direct de la demande à un conseiller.
-🧪 Tests
-Pour exécuter la suite de tests unitaires et d'intégration :
-code
-Bash
-pytest tests/ -v
-🔒 Sécurité et production
-⚠️ Attention : L'utilisation de MASTER_API_KEY comme secret partagé unique est insuffisante pour un environnement de production multi-locataire (multi-tenant).
-Avant d'ouvrir le service à des clients réels, veillez à effectuer les modifications suivantes :
-Remplacer la vérification de clé en mémoire par une requête en base de données associant chaque clé API à un compte client.
-Appliquer des quotas et des limitations de débit spécifiques à chaque client.
-Permettre la rotation des clés d'API sans redémarrage de l'application (par exemple en stockant des empreintes de clés hachées dans PostgreSQL).
-Envisager l'usage de jetons JWT à courte durée de vie avec mécanisme de rafraîchissement pour les applications clientes directes.
-Ne committez jamais votre fichier .env. Utilisez les gestionnaires de secrets de votre plateforme d'hébergement.
+) : Confiance trop faible. La demande est directement envoyée à un agent sans proposition de réponse automatisée.
+🔒 Sécurité et passage à l'échelle
+⚠️ Limites du MVP : La clé MASTER_API_KEY actuelle est un secret partagé statique. C'est insuffisant pour du multi-tenant en production.
+Avant d'ouvrir l'API à des clients externes :
+Gestion des clés : Remplacez la vérification statique par un appel en base de données associant chaque clé API à un client unique.
+Quota et Rate Limiting : Remplacez le limiteur de débit en mémoire par une instance Redis partagée pour gérer le multi-instance.
+Rotation des clés : Stockez les clés sous forme hachée en base de données (type PostgreSQL) pour permettre leur révocation en temps réel sans coupure de service.
 🚀 Déploiement sur Railway
-Procédure de déploiement
-Installer l'interface CLI Railway :
-code
-Bash
-npm install -g @railway/cli  # Ou via Homebrew : brew install railway
-S'authentifier :
+Étapes rapides de mise en ligne
+S'authentifier sur le CLI Railway :
 code
 Bash
 railway login
-Initialiser ou lier le projet :
+Lier votre dossier au projet Railway :
 code
 Bash
-railway init   # Choisir "Empty project" s'il s'agit d'un premier déploiement
-# Ou pour lier un projet existant :
 railway link
-Déployer l'application :
+Lancer le build et déployer :
 code
 Bash
 railway up
-ℹ️ Le premier déploiement prend environ 10 minutes en raison du téléchargement des poids des modèles d'embedding et de reranking (~400 Mo) qui sont ensuite intégrés à l'image Docker. Les déploiements suivants bénéficient du cache de couche Docker et prennent environ 3 minutes.
-Configuration des variables d'environnement sur Railway
-Après le premier déploiement, rendez-vous sur votre tableau de bord Railway, puis dans l'onglet Variables de votre service pour y ajouter les clés suivantes :
-Variable	Notes
-MISTRAL_API_KEY	Clé d'API pour le LLM Mistral
-QDRANT_URL	Point de terminaison de votre cluster Qdrant Cloud
-QDRANT_API_KEY	Clé API Qdrant (sans le préfixe #)
-FIRECRAWL_API_KEY	Clé d'API pour le service de crawling de pages web
-MASTER_API_KEY	Générer avec : python -c "import secrets; print(secrets.token_hex(32))"
-CORS_ALLOWED_ORIGINS	Domaines frontend autorisés (séparés par des virgules)
-Variables optionnelles (disposant de valeurs par défaut) : EMBEDDING_MODEL, RERANKER_MODEL, MISTRAL_MODEL, SCORER_C1_SCALE_FACTOR, ROUTER_*, LOG_LEVEL.
-Vérification du déploiement
-Vous pouvez tester l'état du service déployé en exécutant le script de test :
-code
-Bash
-API_URL=$(railway status --json | python -c "import sys,json; print(json.load(sys.stdin)['url'])") \
-MASTER_API_KEY=<votre-cle-api> \
-python scripts/smoke_test.py
-Ou en interrogeant directement le point d'accès santé :
-code
-Bash
-curl https://<votre-service-railway>.up.railway.app/v1/health
-Remarques importantes pour la production
-Mémoire vive : Le service requiert au minimum 2 Go de RAM (les modèles locaux occupent environ 450 Mo, le reste sert de marge pour le traitement des requêtes). Ajustez cette limite dans l'onglet Settings → Memory Limit de votre tableau de bord Railway.
-Mise à l'échelle (Scaling) : Ne configurez pas plus d'une seule réplique de l'application sans utiliser d'instance Qdrant partagée ou de base de données Redis centralisée pour le gestionnaire de tâches et le limiteur de débit.
-Mise en veille (Autoscale-to-zero) : Désactivez l'arrêt automatique en cas d'inactivité. Le chargement initial des modèles prend environ 30 secondes, ce qui risque de faire échouer les tests d'état de fonctionnement (healthchecks) de Railway lors des redémarrages à froid.
+Recommandations d'infrastructure
+Mémoire : Configurez votre instance Railway avec au moins 2 Go de RAM (le chargement initial des modèles d'embedding et de reranking nécessite environ 450 Mo).
+Mise en veille : Désactivez l'option d'arrêt automatique en cas d'inactivité (Autoscale-to-zero). Le chargement des modèles au démarrage prend environ 30 secondes, ce qui déclencherait des erreurs de timeout sur les requêtes à froid.
