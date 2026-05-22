@@ -27,35 +27,6 @@ Un modèle de langage (LLM) classique ne connaît pas vos données privées et p
 
 ---
 
-## 🛠️ Installation et Configuration
-
-### 1. Création de l'environnement virtuel
-
-Exécutez cette commande dans votre terminal :
-
-```bash
-python -m venv .venv
-```
-
-### 2. Activation de l'environnement virtuel
-
-Sur Windows :
-```bash
-.venv\Scripts\activate
-```
-
-Sur Linux ou macOS :
-```bash
-source .venv/bin/activate
-```
-
-### 3. Installation des dépendances
-
-Installez les bibliothèques requises :
-```bash
-pip install -r requirements.txt
-```
-
 ### 4. Configuration des variables d'environnement
 
 Copiez le fichier d'exemple pour créer votre fichier de configuration :
